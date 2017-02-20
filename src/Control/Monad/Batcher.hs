@@ -102,9 +102,10 @@ runBatcher work m = do
               go bx
     go m
 
--- | A @Worker@ is responsible for executing the given commands. Instead of
--- executing each command individually it might group commands into batches and
--- execute each batch using a more efficient method.
+-- | A @Worker@ is responsible for executing the given batch of
+-- commands. Instead of executing each command individually it might group
+-- commands and execute each group in one go. It might also execute each command
+-- concurrently.
 --
 -- The @Worker@ should ensure that the result of /each/ command is written using
 -- 'writeResult'.
