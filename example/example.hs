@@ -47,24 +47,24 @@ unbatchedWorker = simpleWorker $ \case
 batchedWorker :: Worker Command IO
 batchedWorker cmds = traverse_ exeBatch batches
   where
-    batches :: [NonEmpty (SomeCommand Command IO)]
+    batches :: [NonEmpty (Scheduled Command IO)]
     batches = NonEmpty.groupBy inBatch cmds
       where
-        inBatch :: SomeCommand Command IO -> SomeCommand Command IO -> Bool
-        inBatch (SomeCommand PutStrLn{} _) (SomeCommand PutStrLn{} _) = True
-        inBatch (SomeCommand GetLine{}  _) (SomeCommand GetLine{}  _) = True
-        inBatch _                          _                          = False
+        inBatch :: Scheduled Command IO -> Scheduled Command IO -> Bool
+        inBatch (Scheduled PutStrLn{} _) (Scheduled PutStrLn{} _) = True
+        inBatch (Scheduled GetLine{}  _) (Scheduled GetLine{}  _) = True
+        inBatch _                        _                        = False
 
-    exeBatch :: NonEmpty (SomeCommand Command IO) -> IO ()
-    exeBatch (someCmd@(SomeCommand cmd _) :| someCmds) = do
+    exeBatch :: NonEmpty (Scheduled Command IO) -> IO ()
+    exeBatch (someCmd@(Scheduled cmd _) :| someCmds) = do
         System.IO.putStrLn "BATCH:"
         case cmd of
           PutStrLn{} -> System.IO.putStrLn $ intercalate "\n" $ getStrings (someCmd:someCmds)
           GetLine{}  -> unbatchedWorker (someCmd:someCmds)
 
-    getStrings :: [SomeCommand Command IO] -> [String]
+    getStrings :: [Scheduled Command IO] -> [String]
     getStrings = mapMaybe mbGetString
         where
-          mbGetString :: SomeCommand Command IO -> Maybe String
-          mbGetString (SomeCommand (PutStrLn str) _) = Just str
-          mbGetString (SomeCommand GetLine{}      _) = Nothing
+          mbGetString :: Scheduled Command IO -> Maybe String
+          mbGetString (Scheduled (PutStrLn str) _) = Just str
+          mbGetString (Scheduled GetLine{}      _) = Nothing

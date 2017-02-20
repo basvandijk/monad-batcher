@@ -9,7 +9,7 @@ module Control.Monad.Batcher
 
   , runBatcher
   , Worker
-  , SomeCommand(..)
+  , Scheduled(..)
   , simpleWorker
   ) where
 
@@ -20,7 +20,7 @@ import Data.IORef (IORef, newIORef, writeIORef, readIORef)
 
 -- | An applicative monad that schedules commands for later more efficient execution.
 newtype Batcher command m a = Batcher
-    { unBatcher :: IORef [SomeCommand command m] -> m (Result command m a) }
+    { unBatcher :: IORef [Scheduled command m] -> m (Result command m a) }
 
 data Result command m a
    = Done a
@@ -53,16 +53,16 @@ instance (Monad m) => Monad (Batcher command m) where
                    Blocked bx' -> pure $ Blocked $ bx' >>= f
     (>>) = (*>)
 
--- | A command paired with a function to communicate its result.
+-- | A @'schedule'd@ command paired with a function to communicate its result.
 --
 -- Note that the result of the command is
 -- <https://downloads.haskell.org/~ghc/latest/docs/html/users_guide/glasgow_exts.html?highlight=existentialquantification#ghc-flag--XExistentialQuantification existentially quantified>.
 -- This ensures that multiple commands with different
--- result types can be stored in a list which can then be given to a 'Worker' for execution.
-data SomeCommand command m = forall r.
-     SomeCommand
-     { command     :: command r
-     , writeResult :: r -> m ()
+-- result types can be batched in a list which can then be given to a 'Worker' for execution.
+data Scheduled command m = forall a.
+     Scheduled
+     { command     :: command a
+     , writeResult :: a -> m ()
      }
 
 -- | Schedule a command for later execution.
@@ -73,14 +73,14 @@ schedule cmd = Batcher $ \ref -> liftIO $ do
     someCmds <- readIORef ref
     resultRef <- newIORef (error "Result of command not written back!")
     let write r = liftIO $ writeIORef resultRef r
-    writeIORef ref (SomeCommand cmd write : someCmds)
+    writeIORef ref (Scheduled cmd write : someCmds)
     pure $ Blocked $ Batcher $ \_ref -> liftIO $ Done <$> readIORef resultRef
 
 -- | Similar as 'schedule' but optimized for commands that have no result.
 schedule_ :: (MonadIO m) => command () -> Batcher command m ()
 schedule_ cmd = Batcher $ \ref -> liftIO $ do
     someCmds <- readIORef ref
-    writeIORef ref (SomeCommand cmd (\_r -> pure ()) : someCmds)
+    writeIORef ref (Scheduled cmd (\_r -> pure ()) : someCmds)
     pure $ Blocked $ pure ()
 
 {-# NOINLINE [1] schedule #-}
@@ -102,19 +102,19 @@ runBatcher work m = do
               go bx
     go m
 
--- | A @Worker@ is responsible for executing the given batch of
+-- | A @Worker@ is responsible for executing the given batch of scheduled
 -- commands. Instead of executing each command individually it might group
 -- commands and execute each group in one go. It might also execute each command
 -- concurrently.
 --
 -- The @Worker@ should ensure that the result of /each/ command is written using
 -- 'writeResult'.
-type Worker command m = [SomeCommand command m] -> m ()
+type Worker command m = [Scheduled command m] -> m ()
 
 -- | A convenience @Worker@ that simply executes commands using the given
 -- function without any batching.
 simpleWorker :: (Monad m) => (forall r. command r -> m r) -> Worker command m
-simpleWorker exe = traverse_ $ \(SomeCommand cmd write) -> exe cmd >>= write
+simpleWorker exe = traverse_ $ \(Scheduled cmd write) -> exe cmd >>= write
 
 (<&>) :: Functor f => f a -> (a -> b) -> f b
 m <&> f = f <$> m
