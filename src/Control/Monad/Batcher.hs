@@ -78,10 +78,10 @@ data Scheduled command m = forall a.
 -- | Schedule a command for later execution.
 schedule :: (MonadIO m, MonadThrow m) => command a -> Batcher command m a
 schedule cmd = Batcher $ \ref -> liftIO $ do
-    someCmds <- readIORef ref
+    scheduledCmds <- readIORef ref
     resultRef <- newIORef (error "Result of command not written back!")
     let write r = liftIO $ writeIORef resultRef r
-    writeIORef ref (Scheduled cmd write : someCmds)
+    writeIORef ref (Scheduled cmd write : scheduledCmds)
     pure $ Blocked $ Batcher $ \_ref -> do
       r <- liftIO $ readIORef resultRef
       case r of
@@ -97,9 +97,9 @@ runBatcher work m = do
           case rx of
             Done x -> pure x
             Blocked bx -> do
-              someCmds <- liftIO $ readIORef ref
+              scheduledCmds <- liftIO $ readIORef ref
               liftIO $ writeIORef ref []
-              work $ reverse someCmds
+              work $ reverse scheduledCmds
               go bx
     go m
 
