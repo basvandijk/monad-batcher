@@ -76,8 +76,6 @@ data Scheduled command m = forall a.
      }
 
 -- | Schedule a command for later execution.
---
--- For commands that have no result it's more efficient to use 'schedule_'.
 schedule :: (MonadIO m, MonadThrow m) => command a -> Batcher command m a
 schedule cmd = Batcher $ \ref -> liftIO $ do
     someCmds <- readIORef ref
