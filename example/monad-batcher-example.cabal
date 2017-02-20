@@ -1,9 +1,8 @@
-name:                monad-batcher
+name:                monad-batcher-example
 version:             0.0.0.0
-synopsis:            An applicative monad that batches commands for later more efficient execution
+synopsis:            An example for monad-batcher
 homepage:            https://github.com/basvandijk/monad-batcher
 license:             BSD3
-license-file:        LICENSE
 author:              Bas van Dijk
 maintainer:          Bas van Dijk <v.dijk.bas@gmail.com>
 copyright:           Bas van Dijk <v.dijk.bas@gmail.com>
@@ -12,14 +11,8 @@ build-type:          Simple
 extra-source-files:  ChangeLog.md
 cabal-version:       >=1.10
 
-source-repository head
-  type:     git
-  location: https://github.com/basvandijk/monad-batcher.git
-
-library
-  exposed-modules:     Control.Monad.Batcher
-  build-depends:       base >=4.9 && <5
-  hs-source-dirs:      src
+executable example
+  build-depends:       base, monad-batcher
+  main-is:             example.hs
   ghc-options:         -Wall
   default-language:    Haskell2010
-
