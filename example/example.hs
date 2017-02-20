@@ -30,7 +30,7 @@ batcher = do
              -- `pure ()` is absent.
 
 putStrLn :: String -> Batcher Command IO ()
-putStrLn str = schedule_ (PutStrLn str)
+putStrLn str = schedule (PutStrLn str)
 
 getLine :: Batcher Command IO String
 getLine = schedule GetLine

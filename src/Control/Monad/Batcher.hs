@@ -3,10 +3,7 @@
 
 module Control.Monad.Batcher
   ( Batcher
-
   , schedule
-  , schedule_
-
   , runBatcher
   , Worker
   , Scheduled(..)
@@ -15,6 +12,7 @@ module Control.Monad.Batcher
 
 import Control.Applicative (liftA2)
 import Control.Monad.IO.Class (MonadIO, liftIO)
+import Control.Monad.Catch (MonadThrow, throwM, MonadCatch, catch, SomeException, try)
 import Data.Foldable (traverse_)
 import Data.IORef (IORef, newIORef, writeIORef, readIORef)
 
@@ -53,6 +51,18 @@ instance (Monad m) => Monad (Batcher command m) where
                    Blocked bx' -> pure $ Blocked $ bx' >>= f
     (>>) = (*>)
 
+instance (MonadThrow m) => MonadThrow (Batcher command m) where
+    throwM ex = Batcher $ \_ref -> throwM ex
+
+instance (MonadCatch m) => MonadCatch (Batcher command m) where
+    catch b h = Batcher $ \ref ->
+                  let m = do r <- unBatcher b ref
+                             pure $ case r of
+                                      Done x     -> Done x
+                                      Blocked b' -> Blocked $ catch b' h
+                      hm ex = unBatcher (h ex) ref
+                  in catch m hm
+
 -- | A @'schedule'd@ command paired with a function to communicate its result.
 --
 -- Note that the result of the command is
@@ -62,30 +72,23 @@ instance (Monad m) => Monad (Batcher command m) where
 data Scheduled command m = forall a.
      Scheduled
      { command     :: command a
-     , writeResult :: a -> m ()
+     , writeResult :: Either SomeException a -> m ()
      }
 
 -- | Schedule a command for later execution.
 --
 -- For commands that have no result it's more efficient to use 'schedule_'.
-schedule :: (MonadIO m) => command a -> Batcher command m a
+schedule :: (MonadIO m, MonadThrow m) => command a -> Batcher command m a
 schedule cmd = Batcher $ \ref -> liftIO $ do
     someCmds <- readIORef ref
     resultRef <- newIORef (error "Result of command not written back!")
     let write r = liftIO $ writeIORef resultRef r
     writeIORef ref (Scheduled cmd write : someCmds)
-    pure $ Blocked $ Batcher $ \_ref -> liftIO $ Done <$> readIORef resultRef
-
--- | Similar as 'schedule' but optimized for commands that have no result.
-schedule_ :: (MonadIO m) => command () -> Batcher command m ()
-schedule_ cmd = Batcher $ \ref -> liftIO $ do
-    someCmds <- readIORef ref
-    writeIORef ref (Scheduled cmd (\_r -> pure ()) : someCmds)
-    pure $ Blocked $ pure ()
-
-{-# NOINLINE [1] schedule #-}
-{-# RULES "schedule->schedule_"
-          schedule = schedule_ :: (MonadIO m) => command () -> Batcher command m () #-}
+    pure $ Blocked $ Batcher $ \_ref -> do
+      r <- liftIO $ readIORef resultRef
+      case r of
+        Left ex -> throwM ex
+        Right x -> pure $ Done x
 
 -- | Execute a @Batcher@ computation using the given @Worker@.
 runBatcher :: (MonadIO m) => Worker command m -> Batcher command m a -> m a
@@ -113,8 +116,8 @@ type Worker command m = [Scheduled command m] -> m ()
 
 -- | A convenience @Worker@ that simply executes commands using the given
 -- function without any batching.
-simpleWorker :: (Monad m) => (forall r. command r -> m r) -> Worker command m
-simpleWorker exe = traverse_ $ \(Scheduled cmd write) -> exe cmd >>= write
+simpleWorker :: (MonadCatch m) => (forall r. command r -> m r) -> Worker command m
+simpleWorker exe = traverse_ $ \(Scheduled cmd write) -> try (exe cmd) >>= write
 
 (<&>) :: Functor f => f a -> (a -> b) -> f b
 m <&> f = f <$> m

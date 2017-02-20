@@ -18,7 +18,7 @@ source-repository head
 
 library
   exposed-modules:     Control.Monad.Batcher
-  build-depends:       base >=4.9 && <5
+  build-depends:       base >=4.9 && <5, exceptions
   hs-source-dirs:      src
   ghc-options:         -Wall
   default-language:    Haskell2010
