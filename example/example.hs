@@ -56,11 +56,13 @@ batchedWorker cmds = traverse_ exeBatch batches
         inBatch _                        _                        = False
 
     exeBatch :: NonEmpty (Scheduled Command IO) -> IO ()
-    exeBatch (someCmd@(Scheduled cmd _) :| someCmds) = do
+    exeBatch (scheduledCmd@(Scheduled cmd _) :| scheduledCmds) = do
         System.IO.putStrLn "BATCH:"
         case cmd of
-          PutStrLn{} -> System.IO.putStrLn $ intercalate "\n" $ getStrings (someCmd:someCmds)
-          GetLine{}  -> unbatchedWorker (someCmd:someCmds)
+          PutStrLn{} -> System.IO.putStrLn $ intercalate "\n" $ getStrings allScheduledCmds
+          GetLine{}  -> unbatchedWorker allScheduledCmds
+      where
+        allScheduledCmds = scheduledCmd : scheduledCmds
 
     getStrings :: [Scheduled Command IO] -> [String]
     getStrings = mapMaybe mbGetString
