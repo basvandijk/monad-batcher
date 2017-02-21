@@ -5,13 +5,13 @@
 module Main (main) where
 
 import Control.Monad.Batcher
-import Data.List.NonEmpty ( NonEmpty((:|)) )
-import qualified Data.List.NonEmpty as NonEmpty
+import Control.Monad.Catch (SomeException, Exception, throwM, try)
+import Data.Typeable
 import Data.Foldable
 import Data.List
-import Data.Maybe
 import Prelude hiding (putStrLn, getLine)
 import qualified System.IO (putStrLn, getLine)
+import Debug.Trace (traceM)
 
 main :: IO ()
 main = runBatcher batchedWorker batcher
@@ -21,6 +21,7 @@ batcher = do
     putStrLn "Welcome to the example of Control.Monad.Batcher!"
     putStrLn "Please type your name "
     putStrLn "and age."
+    throwM MyException
     name <- getLine
     age <- getLine
     putStrLn $ "Hello " ++ name
@@ -28,6 +29,10 @@ batcher = do
     pure () -- TODO: Please notify GHCHQ about ApplicativeDo's failure to put
             -- the two preceding lines in Applicative style when the final
              -- `pure ()` is absent.
+
+data MyException = MyException deriving (Show, Typeable)
+
+instance Exception MyException
 
 putStrLn :: String -> Batcher Command IO ()
 putStrLn str = schedule (PutStrLn str)
@@ -39,34 +44,26 @@ data Command r where
     PutStrLn :: String -> Command ()
     GetLine  :: Command String
 
-unbatchedWorker :: Worker Command IO
-unbatchedWorker = simpleWorker $ \case
-                    PutStrLn str -> System.IO.putStrLn str
-                    GetLine      -> System.IO.getLine
-
 batchedWorker :: Worker Command IO
-batchedWorker cmds = traverse_ exeBatch batches
-  where
-    batches :: [NonEmpty (Scheduled Command IO)]
-    batches = NonEmpty.groupBy inBatch cmds
-      where
-        inBatch :: Scheduled Command IO -> Scheduled Command IO -> Bool
-        inBatch (Scheduled PutStrLn{} _) (Scheduled PutStrLn{} _) = True
-        inBatch (Scheduled GetLine{}  _) (Scheduled GetLine{}  _) = True
-        inBatch _                        _                        = False
+batchedWorker cmds = for_ (batch cmds) $ \b -> do
+                       System.IO.putStrLn "BATCH:"
+                       case b of
+                         OpPutStrLns strs writes -> do
+                             r <- try $ System.IO.putStrLn $ intercalate "\n" $ reverse strs
+                             for_ writes $ \write -> write r
+                         OpGetLine write -> do
+                             r <- try $ System.IO.getLine
+                             write r
 
-    exeBatch :: NonEmpty (Scheduled Command IO) -> IO ()
-    exeBatch (scheduledCmd@(Scheduled cmd _) :| scheduledCmds) = do
-        System.IO.putStrLn "BATCH:"
-        case cmd of
-          PutStrLn{} -> System.IO.putStrLn $ intercalate "\n" $ getStrings allScheduledCmds
-          GetLine{}  -> unbatchedWorker allScheduledCmds
-      where
-        allScheduledCmds = scheduledCmd : scheduledCmds
+data Batch = OpPutStrLns [String] [Either SomeException () -> IO ()]
+           | OpGetLine (Either SomeException String -> IO ())
 
-    getStrings :: [Scheduled Command IO] -> [String]
-    getStrings = mapMaybe mbGetString
-        where
-          mbGetString :: Scheduled Command IO -> Maybe String
-          mbGetString (Scheduled (PutStrLn str) _) = Just str
-          mbGetString (Scheduled GetLine{}      _) = Nothing
+batch :: [Scheduled Command IO] -> [Batch]
+batch [] = []
+batch (Scheduled (PutStrLn str) write : cmds) = batchPutStrLns [str] [write] cmds
+batch (Scheduled GetLine write        : cmds) = OpGetLine write : batch cmds
+
+batchPutStrLns :: [String] -> [Either SomeException () -> IO ()] -> [Scheduled Command IO] -> [Batch]
+batchPutStrLns strs writes []                                      = OpPutStrLns strs writes : []
+batchPutStrLns strs writes cmds@(Scheduled GetLine _       : _)    = OpPutStrLns strs writes : batch cmds
+batchPutStrLns strs writes (Scheduled (PutStrLn str) write : cmds) = batchPutStrLns (str:strs) (write:writes) cmds
