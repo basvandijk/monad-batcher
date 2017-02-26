@@ -1,21 +1,115 @@
 {-# language ExistentialQuantification #-}
 {-# language RankNTypes #-}
+{-# language GADTs #-}
+{-# language KindSignatures #-}
+{-# language ScopedTypeVariables #-}
 
 module Control.Monad.Batcher
   ( Batcher
-  , schedule
+  -- , schedule
   , runBatcher
   , Worker
   , Scheduled(..)
-  , simpleWorker
+  -- , simpleWorker
   ) where
 
 import Control.Applicative (liftA2)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Catch (MonadThrow, throwM, MonadCatch, catch, SomeException, try)
+import Control.Monad.Catch (Exception, MonadThrow, throwM, MonadCatch, catch, SomeException, try)
 import Data.Foldable (traverse_)
 import Data.IORef (IORef, newIORef, writeIORef, readIORef)
 
+
+
+data Batcher (command :: * -> *) (m :: * -> *) (a :: *) where
+    Pure :: a -> Batcher command m a
+    Fmap :: (b -> a) -> Batcher command m b -> Batcher command m a
+    Ap   :: Batcher command m (b -> a) -> Batcher command m b -> Batcher command m a
+    Bind :: Batcher command m b -> (b -> Batcher command m a) -> Batcher command m a
+
+    Schedule :: command a -> Batcher command m a
+    ReadResult :: IORef (Either SomeException a) -> Batcher command m a
+
+    -- Throw :: Exception e => e -> Batcher command m a
+    -- Catch :: Exception e => Batcher command m a -> (e -> Batcher command m a) -> Batcher command m a
+
+instance Functor     (Batcher command m) where fmap   = Fmap
+instance Applicative (Batcher command m) where pure   = Pure; (<*>) = Ap
+instance Monad       (Batcher command m) where return = pure; (>>=) = Bind
+-- instance MonadThrow  (Batcher command m) where throwM = Throw
+-- instance MonadCatch  (Batcher command m) where catch  = Catch
+
+-- schedule :: command a -> Batcher command m a
+-- schedule = Schedule
+
+runBatcher :: forall command m a. (MonadIO m, MonadThrow m) => Worker command m -> Batcher command m a -> m a
+runBatcher work b = do
+    ref <- liftIO $ newIORef []
+    let run = go ref pure $ \b -> do
+                scheduledCmds <- liftIO $ readIORef ref
+                liftIO $ writeIORef ref []
+                work $ reverse scheduledCmds
+                run b
+    run b
+  where
+    go :: forall b c
+        . IORef [Scheduled command m]
+       -> (b -> m c)
+       -> (Batcher command m b -> m c)
+       ->  Batcher command m b -> m c
+    go _ref  done _blocked (Pure x)       = done x
+    go  ref  done  blocked (Fmap f b)     = go ref (done . f) (blocked . fmap f) b
+    go  ref  done  blocked (Ap bf bx)     = let donef f = go ref (done . f) (blocked . fmap f) bx
+                                                blockedf bf = let donex     x = blocked $ fmap ($ x) bf
+                                                                  blockedx bx = blocked $ bf <*> bx
+                                                              in go ref donex blockedx bx
+                                            in go ref donef blockedf bf
+    go  ref  done  blocked (Bind bx f)    = go ref (go ref done blocked . f)
+                                                   (\bx' -> blocked $ bx' >>= f)
+                                                   bx
+
+    go  ref _done  blocked (Schedule cmd) = do
+      resultRef <- liftIO $ do
+        scheduledCmds <- readIORef ref
+        resultRef <- newIORef (error "Result of command not written back!")
+        let write r = liftIO $ writeIORef resultRef r
+        writeIORef ref (Scheduled cmd write : scheduledCmds)
+        pure resultRef
+      blocked $ ReadResult resultRef
+
+    go ref done _blocked (ReadResult resultRef) = do
+        r <- liftIO $ readIORef resultRef
+        case r of
+          Left ex -> throwM ex
+          Right x -> done x
+
+
+    -- go (Throw ex)     =
+    -- go (Catch ba h)   =
+
+
+-- | A @Worker@ is responsible for executing the given batch of scheduled
+-- commands. Instead of executing each command individually it might group
+-- commands and execute each group in one go. It might also execute each command
+-- concurrently.
+--
+-- The @Worker@ should ensure that the result of /each/ command is written using
+-- 'writeResult'.
+type Worker command m = [Scheduled command m] -> m ()
+
+-- | A @'schedule'd@ command paired with a function to communicate its result.
+--
+-- Note that the result of the command is
+-- <https://downloads.haskell.org/~ghc/latest/docs/html/users_guide/glasgow_exts.html?highlight=existentialquantification#ghc-flag--XExistentialQuantification existentially quantified>.
+-- This ensures that multiple commands with different
+-- result types can be batched in a list which can then be given to a 'Worker' for execution.
+data Scheduled command m = forall a.
+     Scheduled
+     { command     :: command a
+     , writeResult :: Either SomeException a -> m ()
+     }
+
+{-
 -- | An applicative monad that schedules commands for later more efficient execution.
 newtype Batcher command m a = Batcher
     { unBatcher :: IORef [Scheduled command m] -> m (Result command m a) }
@@ -132,3 +226,4 @@ simpleWorker exe = traverse_ $ \(Scheduled cmd write) -> try (exe cmd) >>= write
 
 (<&>) :: Functor f => f a -> (a -> b) -> f b
 m <&> f = f <$> m
+-}
