@@ -30,10 +30,21 @@ instance (Functor m) => Functor (Result command m) where
 
 instance (Applicative m) => Applicative (Result command m) where
     pure = Done
+
     Done     f <*> Done     x = Done    $  f        x
     Done     f <*> Blocked bx = Blocked $  f <$>   bx
     Blocked bf <*> Done     x = Blocked $ bf <&> ($ x)
     Blocked bf <*> Blocked bx = Blocked $ bf <*>   bx
+
+    Done    _a  *> Done     b = Done                  b
+    Done    _a  *> Blocked bb = Blocked              bb
+    Blocked ba  *> Done     b = Blocked $ ba <&> (\_->b)
+    Blocked ba  *> Blocked bb = Blocked $ ba  *>     bb
+
+    Done     a <*  Done    _b = Done           a
+    Done     a <*  Blocked bb = Blocked $ (\_->a) <$> bb
+    Blocked ba <*  Done    _b = Blocked       ba
+    Blocked ba <*  Blocked bb = Blocked $     ba  <*  bb
 
 instance (Functor m) => Functor (Batcher command m) where
     fmap f b = Batcher $ \ref -> fmap (f <$>) (unBatcher b ref)
@@ -41,6 +52,8 @@ instance (Functor m) => Functor (Batcher command m) where
 instance (Applicative m) => Applicative (Batcher command m) where
     pure    x = Batcher $ \_ref -> pure $ pure x
     bf <*> bx = Batcher $ \ ref -> liftA2 (<*>) (unBatcher bf ref) (unBatcher bx ref)
+    ba  *> bb = Batcher $ \ ref -> liftA2  (*>) (unBatcher ba ref) (unBatcher bb ref)
+    ba <*  bb = Batcher $ \ ref -> liftA2 (<*)  (unBatcher ba ref) (unBatcher bb ref)
 
 instance (Monad m) => Monad (Batcher command m) where
     return = pure
