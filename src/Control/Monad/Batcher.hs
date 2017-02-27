@@ -97,9 +97,15 @@ catchBatcher
     => Batcher command m a        -- ^ The computation to run
     -> (e -> Batcher command m a) -- ^ Handler to invoke if an exception is raised
     -> Batcher command m a
-Batcher b `catchBatcher` h = Batcher $ \ref onDone onBlocked ->
-    b ref onDone (\b' -> onBlocked $ b' `catchBatcher` h)
-      `catch` \e -> unBatcher (h e) ref onDone onBlocked
+b `catchBatcher` h = Batcher $ \ref onDone onBlocked -> do
+    let run (Batcher bx) = bx ref (\ x  -> pure (Done     x ))
+                                  (\bx' -> pure (Blocked bx'))
+    r <- run b `catch` \e -> run (h e)
+    case r of
+      Done     x  -> onDone x
+      Blocked bx' -> onBlocked (bx' `catchBatcher` h)
+
+data Result command m a = Done a | Blocked (Batcher command m a)
 
 -- | Schedule a command for later execution.
 schedule
