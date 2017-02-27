@@ -14,7 +14,7 @@ module Control.Monad.Batcher
   ) where
 
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Catch (MonadThrow, throwM, MonadCatch, catch, Exception, SomeException, try)
+import Control.Monad.Catch (MonadThrow, throwM, MonadCatch, Exception, SomeException, try)
 import Data.Foldable (traverse_)
 import Data.Functor ((<$),($>))
 import Data.IORef (IORef, newIORef, writeIORef, readIORef)
@@ -97,13 +97,15 @@ catchBatcher
     => Batcher command m a        -- ^ The computation to run
     -> (e -> Batcher command m a) -- ^ Handler to invoke if an exception is raised
     -> Batcher command m a
-b `catchBatcher` h = Batcher $ \ref onDone onBlocked -> do
-    let run (Batcher bx) = bx ref (\ x  -> pure (Done     x ))
-                                  (\bx' -> pure (Blocked bx'))
-    r <- run b `catch` \e -> run (h e)
-    case r of
-      Done     x  -> onDone x
-      Blocked bx' -> onBlocked (bx' `catchBatcher` h)
+Batcher bx `catchBatcher` h = Batcher $ \ref onDone onBlocked -> do
+    e <- try $ bx ref (\ x  -> pure (Done     x ))
+                      (\bx' -> pure (Blocked bx'))
+    case e of
+      Left ex -> unBatcher (h ex) ref onDone onBlocked
+      Right r ->
+        case r of
+          Done     x  -> onDone x
+          Blocked bx' -> onBlocked (bx' `catchBatcher` h)
 
 data Result command m a = Done a | Blocked (Batcher command m a)
 
