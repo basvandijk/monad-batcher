@@ -5,13 +5,11 @@
 module Main (main) where
 
 import Control.Monad.Batcher
-import Control.Monad.Catch (SomeException, Exception, throwM, try)
-import Data.Typeable
+import Control.Exception (SomeException, try)
 import Data.Foldable
 import Data.List
 import Prelude hiding (putStrLn, getLine)
 import qualified System.IO (putStrLn, getLine)
-import Debug.Trace (traceM)
 
 main :: IO ()
 main = runBatcher batchedWorker batcher
@@ -21,18 +19,11 @@ batcher = do
     putStrLn "Welcome to the example of Control.Monad.Batcher!"
     putStrLn "Please type your name "
     putStrLn "and age."
-    throwM MyException
     name <- getLine
     age <- getLine
     putStrLn $ "Hello " ++ name
     putStrLn $ age ++ " is not that old!"
-    pure () -- TODO: Please notify GHCHQ about ApplicativeDo's failure to put
-            -- the two preceding lines in Applicative style when the final
-             -- `pure ()` is absent.
-
-data MyException = MyException deriving (Show, Typeable)
-
-instance Exception MyException
+    pure ()
 
 putStrLn :: String -> Batcher Command IO ()
 putStrLn str = schedule (PutStrLn str)
