@@ -58,11 +58,14 @@ instance Functor (Batcher command m) where
         bx ref (\_x  -> onDone     y       )
                (\bx' -> onBlocked (y <$ bx'))
 
+-- | Composing two 'Batcher' computations using the applicative combinators
+-- ensures that commands scheduled in both computations are given to the
+-- 'Worker' in one batch.
 instance Applicative (Batcher command m) where
     pure x = Batcher $ \_ref onDone _onBlocked -> onDone x
 
     Batcher bf <*> Batcher bx = Batcher $ \ref onDone onBlocked ->
-        bf ref (\ f  -> bx ref (\ x  -> onDone    ( f         x))
+        bf ref (\ f  -> bx ref (\ x  -> onDone    ( f         x ))
                                (\bx' -> onBlocked ( f  <$>   bx')))
                (\bf' -> bx ref (\ x  -> onBlocked (bf' <&> ($ x)))
                                (\bx' -> onBlocked (bf' <*>   bx')))
@@ -74,7 +77,7 @@ instance Applicative (Batcher command m) where
                                (\bx' -> onBlocked (by'  *>   bx')))
 
     Batcher bx <* Batcher by = Batcher $ \ref onDone onBlocked ->
-        bx ref (\ x  -> by ref (\_y  -> onDone      x)
+        bx ref (\ x  -> by ref (\_y  -> onDone      x            )
                                (\by' -> onBlocked  (x  <$    by')))
                (\bx' -> by ref (\_y  -> onBlocked  bx'           )
                                (\by' -> onBlocked (bx' <*    by')))
