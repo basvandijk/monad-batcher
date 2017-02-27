@@ -46,49 +46,38 @@ runBatcher work batcher = do
     run batcher
 
 instance Functor (Batcher command m) where
-    {-# INLINABLE fmap #-}
-    fmap f (Batcher b) = Batcher $ \ref done blocked ->
-                           b ref (done . f)
-                                 (blocked . fmap f)
+    f `fmap` Batcher bX = Batcher $ \ref done blocked ->
+        bX ref (\ x  -> done    (f      x ))
+               (\bX' -> blocked (f <$> bX'))
 
-    {-# INLINABLE (<$) #-}
-    y <$ Batcher b = Batcher $ \ref done blocked ->
-                       b ref (\_x -> done y)
-                             (blocked . (y <$))
+    y <$ Batcher bX = Batcher $ \ref done blocked ->
+        bX ref (\_x  -> done     y       )
+               (\bX' -> blocked (y <$ bX'))
 
 instance Applicative (Batcher command m) where
-    {-# INLINABLE pure #-}
     pure x = Batcher $ \_ref done _blocked -> done x
 
-    {-# INLINABLE (<*>) #-}
     Batcher bF <*> Batcher bX = Batcher $ \ref done blocked ->
-        let doneF f = bX ref (done . f) (blocked . fmap f)
-            blockedF bF' = let doneX     x  = blocked (bF' <&> ($ x))
-                               blockedX bX' = blocked (bF' <*> bX')
-                           in bX ref doneX blockedX
-        in bF ref doneF blockedF
+        bF ref (\ f  -> bX ref (\ x  -> done    ( f         x))
+                               (\bX' -> blocked ( f  <$>   bX')))
+               (\bF' -> bX ref (\ x  -> blocked (bF' <&> ($ x)))
+                               (\bX' -> blocked (bF' <*>   bX')))
 
-    {-# INLINABLE (*>) #-}
     Batcher bY *> Batcher bX = Batcher $ \ref done blocked ->
-        let doneY _y = bX ref done blocked
-            blockedY bY' = let doneX     x  = blocked (bY' $>  x)
-                               blockedX bX' = blocked (bY' *> bX')
-                           in bX ref doneX blockedX
-        in bY ref doneY blockedY
+        bY ref (\_y  -> bX ref (\ x  -> done                x  )
+                               (\bX' -> blocked            bX' ))
+               (\bY' -> bX ref (\ x  -> blocked (bY'  $>    x ))
+                               (\bX' -> blocked (bY'  *>   bX')))
 
-    {-# INLINABLE (<*) #-}
     Batcher bX <* Batcher bY = Batcher $ \ref done blocked ->
-        let doneX x = bY ref (\_y -> done x)
-                             (\bY' -> blocked $ x <$ bY')
-            blockedX bX' = let doneY    _y  = blocked bX'
-                               blockedY bY' = blocked (bX' <* bY')
-                           in bY ref doneY blockedY
-        in bX ref doneX blockedX
+        bX ref (\ x  -> bY ref (\_y  -> done      x)
+                               (\bY' -> blocked  (x  <$    bY')))
+               (\bX' -> bY ref (\_y  -> blocked  bX'           )
+                               (\bY' -> blocked (bX' <*    bY')))
 
 instance Monad (Batcher command m) where
     return = pure
 
-    {-# INLINABLE (>>=) #-}
     Batcher b >>= f = Batcher $ \ref done blocked ->
         b ref (\x -> unBatcher (f x) ref done blocked)
               (\b' -> blocked (b' >>= f))
@@ -101,9 +90,8 @@ catchBatcher
     -> (e -> Batcher command m a)
     -> Batcher command m a
 Batcher b `catchBatcher` h = Batcher $ \ref done blocked ->
-    let blockedInCatch b' = blocked $ b' `catchBatcher` h
-    in b ref done blockedInCatch
-         `catch` \e -> unBatcher (h e) ref done blocked
+    b ref done (\b' -> blocked $ b' `catchBatcher` h)
+      `catch` \e -> unBatcher (h e) ref done blocked
 
 schedule :: (MonadIO m, MonadThrow m) => command a -> Batcher command m a
 schedule cmd = Batcher $ \ref _done blocked -> do
