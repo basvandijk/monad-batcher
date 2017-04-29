@@ -1,11 +1,18 @@
 { mkDerivation
-, stdenv
+, stdenv, lib
 , base, exceptions
 }:
 mkDerivation {
   pname = "monad-batcher";
   version = "HEAD";
-  src = ./.;
+  src = lib.sourceByRegex ./. [
+    "^monad-batcher.cabal$"
+    "^Setup.hs$"
+    "^src$"
+    "^src/.*"
+    "^ChangeLog.md$"
+    "^LICENSE$"
+  ];
   libraryHaskellDepends = [ base exceptions ];
   homepage = "https://github.com/basvandijk/monad-batcher";
   description = "An applicative monad that batches commands for later more efficient execution";
