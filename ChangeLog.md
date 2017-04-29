@@ -1,5 +1,5 @@
 # Revision history for monad-batcher
 
-## 0.0.0.0  -- YYYY-mm-dd
+## 0.0.0.0  -- 2017-04-29
 
-* First version. Released on an unsuspecting world.
+* First version
