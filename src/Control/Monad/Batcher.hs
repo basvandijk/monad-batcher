@@ -41,12 +41,12 @@ runBatcher
     -> m a
 runBatcher work b = do
     ref <- liftIO $ newIORef []
-    let run (Batcher bx) = bx ref (\ x  -> pure x)
-                                  (\bx' -> doTheWork *> run bx')
-        doTheWork = do
-          scheduledCmds <- liftIO $ readIORef ref
-          liftIO $ writeIORef ref []
-          work $ reverse scheduledCmds
+    let run (Batcher bx) =
+          bx ref (\ x  -> pure x)
+                 (\bx' -> do
+                    scheduledCmds <- liftIO $ readIORef ref <* writeIORef ref []
+                    work $ reverse scheduledCmds
+                    run bx')
     run b
 
 instance Functor (Batcher command m) where
