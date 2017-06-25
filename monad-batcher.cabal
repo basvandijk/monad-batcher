@@ -1,5 +1,5 @@
 name:                monad-batcher
-version:             0.0.0.0
+version:             0.1.0.0
 synopsis:            An applicative monad that batches commands for later more efficient execution
 homepage:            https://github.com/basvandijk/monad-batcher
 license:             BSD3
@@ -22,4 +22,3 @@ library
   hs-source-dirs:      src
   ghc-options:         -Wall
   default-language:    Haskell2010
-

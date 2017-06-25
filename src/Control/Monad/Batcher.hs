@@ -45,7 +45,7 @@ runBatcher work b = do
           bx ref (\ x  -> pure x)
                  (\bx' -> do
                     scheduledCmds <- liftIO $ readIORef ref <* writeIORef ref []
-                    work $ reverse scheduledCmds
+                    work scheduledCmds
                     run bx')
     run b
 
@@ -128,7 +128,14 @@ schedule cmd = Batcher $ \ref _onDone onBlocked -> do
         Right x -> onDone x
 
 -- | A @Worker@ is responsible for executing the given batch of scheduled
--- commands. Instead of executing each command individually it might group
+-- commands.
+--
+-- Note that the list of scheduled commands is given in LIFO (Last In First Out)
+-- order. In other words the last scheduled command is the head of the list. So
+-- do reverse the list if you depend on executing commands in the order they
+-- were given.
+--
+-- Instead of executing each command individually a @Worker@ might group
 -- commands and execute each group in one go. It might also execute each command
 -- concurrently.
 --
@@ -148,13 +155,14 @@ data Scheduled command m = forall a.
      , writeResult :: Either SomeException a -> m ()
      }
 
--- | A convenience @Worker@ that simply executes commands using the given
+-- | A convenience @Worker@ that simply executes the scheduled
+-- commands in the order in which they are specified using the given
 -- function without any batching.
 simpleWorker
     :: (MonadCatch m)
     => (forall r. command r -> m r) -- ^ Specifies how to execute a command.
     -> Worker command m
-simpleWorker exe = traverse_ $ \(Scheduled cmd write) -> try (exe cmd) >>= write
+simpleWorker exe = traverse_ (\(Scheduled cmd write) -> try (exe cmd) >>= write) . reverse
 
 -- | Infix flipped 'fmap'.
 (<&>) :: Functor f => f a -> (a -> b) -> f b
