@@ -1,5 +1,6 @@
 {-# language ExistentialQuantification #-}
 {-# language RankNTypes #-}
+{-# language UndecidableInstances #-}
 
 module Control.Monad.Batcher
   ( Batcher
@@ -13,127 +14,104 @@ module Control.Monad.Batcher
   , catchBatcher
   ) where
 
-import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Catch (MonadThrow, throwM, MonadCatch, Exception, SomeException, try)
+import Control.Monad.Catch (MonadCatch, Exception, SomeException, try)
 import Data.Foldable (traverse_)
 import Data.Functor ((<$),($>))
-import Data.IORef (IORef, newIORef, writeIORef, readIORef)
-import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Data.Semigroup (Semigroup, (<>))
 
 -- | An applicative monad that schedules commands for later more efficient execution.
-newtype Batcher command m a = Batcher
+newtype Batcher batch command m a = Batcher
     { unBatcher :: forall b
-                 . IORef [Scheduled command m]
-                -> OnDone m a b
-                -> OnBlocked command m a b
+                 . (a -> m b)
+                -> (batch (Scheduled command m) -> Batcher batch command m a -> m b)
                 -> m b
     }
 
-type OnDone            m a b =                   a -> m b
-type OnBlocked command m a b = Batcher command m a -> m b
-
 -- | Execute a @Batcher@ computation using the given @Worker@.
 runBatcher
-    :: forall command m a
-     . (MonadIO m)
-    => Worker command m    -- ^ Specfies how to batch and execute commands.
-    -> Batcher command m a -- ^ The computation to run.
+    :: (Applicative m)
+    => Worker  batch command m   -- ^ Specfies how to batch and execute commands.
+    -> Batcher batch command m a -- ^ The computation to run.
     -> m a
-runBatcher work b = do
-    ref <- liftIO $ newIORef []
-    let run (Batcher bx) =
-          bx ref (\ x  -> pure x)
-                 (\bx' -> do
-                    scheduledCmds <- liftIO $ readIORef ref <* writeIORef ref []
-                    work scheduledCmds
-                    run bx')
-    run b
+runBatcher work = run
+  where
+    run (Batcher b) = b (\x -> pure x)
+                        (\batch b' -> work batch *> run b')
 
-instance Functor (Batcher command m) where
-    f `fmap` Batcher bx = Batcher $ \ref onDone onBlocked ->
-        bx ref (\ x  -> onDone    (f      x ))
-               (\bx' -> onBlocked (f <$> bx'))
+instance Functor (Batcher batch command m) where
+    f `fmap` Batcher bx = Batcher $ \done execute ->
+        bx (\       x  -> done          (f      x))
+           (\batch bx' -> execute batch (f <$> bx'))
 
-    y <$ Batcher bx = Batcher $ \ref onDone onBlocked ->
-        bx ref (\_x  -> onDone     y       )
-               (\bx' -> onBlocked (y <$ bx'))
+    y <$ Batcher bx = Batcher $ \done execute ->
+        bx (\      _x  -> done           y)
+           (\batch bx' -> execute batch (y <$  bx'))
 
 -- | Composing two 'Batcher' computations using the applicative combinators
 -- ensures that commands scheduled in both computations are given to the
 -- 'Worker' in one batch.
-instance Applicative (Batcher command m) where
-    pure x = Batcher $ \_ref onDone _onBlocked -> onDone x
+instance (Semigroup (batch (Scheduled command m))) => Applicative (Batcher batch command m) where
+    pure x = Batcher $ \done _execute -> done x
 
-    Batcher bf <*> Batcher bx = Batcher $ \ref onDone onBlocked ->
-        bf ref (\ f  -> bx ref (\ x  -> onDone    ( f         x ))
-                               (\bx' -> onBlocked ( f  <$>   bx')))
-               (\bf' -> bx ref (\ x  -> onBlocked (bf' <&> ($ x)))
-                               (\bx' -> onBlocked (bf' <*>   bx')))
+    Batcher bf <*> Batcher bx = Batcher $ \done execute ->
+        bf (\        f  -> bx (\        x  -> done                       ( f         x ))
+                              (\batch  bx' -> execute batch              ( f  <$>   bx')))
+           (\batchF bf' -> bx (\        x  -> execute batchF             (bf' <&> ($ x)))
+                              (\batchX bx' -> execute (batchF <> batchX) (bf' <*>   bx')))
 
-    Batcher by *> Batcher bx = Batcher $ \ref onDone onBlocked ->
-        by ref (\_y  -> bx ref (\ x  -> onDone                x  )
-                               (\bx' -> onBlocked            bx' ))
-               (\by' -> bx ref (\ x  -> onBlocked (by'  $>    x ))
-                               (\bx' -> onBlocked (by'  *>   bx')))
+    Batcher by *> Batcher bx = Batcher $ \done execute ->
+        by (\       _y  -> bx (\        x  -> done                         x )
+                              (\batch  bx' -> execute batch               bx'))
+           (\batchY by' -> bx (\        x  -> execute batchY             (by'  $>    x ))
+                              (\batchX bx' -> execute (batchY <> batchX) (by'  *>   bx')))
 
-    Batcher bx <* Batcher by = Batcher $ \ref onDone onBlocked ->
-        bx ref (\ x  -> by ref (\_y  -> onDone      x            )
-                               (\by' -> onBlocked  (x  <$    by')))
-               (\bx' -> by ref (\_y  -> onBlocked  bx'           )
-                               (\by' -> onBlocked (bx' <*    by')))
+    Batcher bx <* Batcher by = Batcher $ \done execute ->
+        bx (\        x  -> by (\       _y  -> done                         x            )
+                              (\batch  by' -> execute batch              ( x  <$    by')))
+           (\batchX bx' -> by (\       _y  -> execute batchX              bx'           )
+                              (\batchY by' -> execute (batchX <> batchY) (bx' <*    by')))
 
-instance Monad (Batcher command m) where
+instance (Semigroup (batch (Scheduled command m))) => Monad (Batcher batch command m) where
     return = pure
 
-    Batcher bx >>= f = Batcher $ \ref onDone onBlocked ->
-        bx ref (\ x  -> unBatcher (f x) ref onDone onBlocked)
-               (\bx' -> onBlocked (bx' >>= f))
+    Batcher b >>= f = Batcher $ \done execute ->
+        b (\x -> unBatcher (f x) done execute)
+          (\batch b' -> execute batch (b' >>= f))
 
     (>>) = (*>)
 
 -- | Catch and handle exceptions.
 catchBatcher
     :: (MonadCatch m, Exception e)
-    => Batcher command m a        -- ^ The computation to run
-    -> (e -> Batcher command m a) -- ^ Handler to invoke if an exception is raised
-    -> Batcher command m a
-Batcher bx `catchBatcher` h = Batcher $ \ref onDone onBlocked -> do
-    e <- try $ bx ref (\ x  -> pure (Done     x ))
-                      (\bx' -> pure (Blocked bx'))
+    => Batcher batch command m a        -- ^ The computation to run
+    -> (e -> Batcher batch command m a) -- ^ Handler to invoke if an exception is raised
+    -> Batcher batch command m a
+Batcher b `catchBatcher` h = Batcher $ \done execute -> do
+    e <- try $ b (\      x  -> pure (Done          x ))
+                 (\batch b' -> pure (Execute batch b'))
     case e of
-      Left ex -> unBatcher (h ex) ref onDone onBlocked
+      Left ex -> unBatcher (h ex) done execute
       Right r ->
         case r of
-          Done     x  -> onDone x
-          Blocked bx' -> onBlocked (bx' `catchBatcher` h)
+          Done          x  -> done x
+          Execute batch b' -> execute batch (b' `catchBatcher` h)
 
-data Result command m a = Done a | Blocked (Batcher command m a)
+data Result batch command m a =
+    Done a | Execute (batch (Scheduled command m)) (Batcher batch command m a)
 
 -- | Schedule a command for later execution.
 schedule
-    :: (MonadIO m, MonadThrow m)
-    => command a -- ^ The command to schedule.
-    -> Batcher command m a
-schedule cmd = Batcher $ \ref _onDone onBlocked -> do
-    resultMVar <- liftIO $ do
-      scheduledCmds <- readIORef ref
-      resultMVar <- newEmptyMVar
-      let write r = liftIO $ putMVar resultMVar r
-      writeIORef ref (Scheduled cmd write : scheduledCmds)
-      pure resultMVar
-    onBlocked $ Batcher $ \_ref onDone _onBlocked -> do
-      r <- liftIO $ takeMVar resultMVar
-      case r of
-        Left ex -> throwM ex
-        Right x -> onDone x
+    :: (Monad m, Applicative batch)
+    => (Either SomeException a -> m ()) -- ^ How to communicate the result
+    -> m a -- ^ How to retrieve the result
+    -> command a -- ^ The command to schedule.
+    -> Batcher batch command m a
+schedule putRes takeRes cmd = Batcher $ \_done execute ->
+    execute (pure (Scheduled cmd putRes)) $ Batcher $ \done _execute ->
+      takeRes >>= done
 
 -- | A @Worker@ is responsible for executing the given batch of scheduled
 -- commands.
---
--- Note that the list of scheduled commands is given in LIFO (Last In First Out)
--- order. In other words the last scheduled command is the head of the list. So
--- do reverse the list if you depend on executing commands in the order they
--- were given.
 --
 -- Instead of executing each command individually a @Worker@ might group
 -- commands and execute each group in one go. It might also execute each command
@@ -141,7 +119,7 @@ schedule cmd = Batcher $ \ref _onDone onBlocked -> do
 --
 -- The @Worker@ should ensure that the result of /each/ command is written using
 -- 'writeResult'.
-type Worker command m = [Scheduled command m] -> m ()
+type Worker batch command m = batch (Scheduled command m) -> m ()
 
 -- | A @'schedule'd@ command paired with a function to communicate its result.
 --
@@ -151,18 +129,18 @@ type Worker command m = [Scheduled command m] -> m ()
 -- result types can be batched in a list which can then be given to a 'Worker' for execution.
 data Scheduled command m = forall a.
      Scheduled
-     { command     :: command a
-     , writeResult :: Either SomeException a -> m ()
+     { command   :: command a
+     , putResult :: Either SomeException a -> m ()
      }
 
 -- | A convenience @Worker@ that simply executes the scheduled
 -- commands in the order in which they are specified using the given
 -- function without any batching.
 simpleWorker
-    :: (MonadCatch m)
+    :: (MonadCatch m, Foldable batch)
     => (forall r. command r -> m r) -- ^ Specifies how to execute a command.
-    -> Worker command m
-simpleWorker exe = traverse_ (\(Scheduled cmd write) -> try (exe cmd) >>= write) . reverse
+    -> Worker batch command m
+simpleWorker exe = traverse_ $ \(Scheduled cmd put) -> try (exe cmd) >>= put
 
 -- | Infix flipped 'fmap'.
 (<&>) :: Functor f => f a -> (a -> b) -> f b
