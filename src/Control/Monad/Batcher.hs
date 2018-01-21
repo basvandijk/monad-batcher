@@ -14,7 +14,9 @@ module Control.Monad.Batcher
   , catchBatcher
   ) where
 
-import Control.Monad.Catch (MonadCatch, Exception, SomeException, try)
+import Control.Monad.IO.Class (MonadIO, liftIO)
+import Control.Monad.Catch (MonadThrow, throwM, MonadCatch, Exception, SomeException, try)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Data.Foldable (traverse_)
 import Data.Functor ((<$),($>))
 import Data.Semigroup (Semigroup, (<>))
@@ -23,7 +25,7 @@ import Data.Semigroup (Semigroup, (<>))
 newtype Batcher batch command m a = Batcher
     { unBatcher :: forall b
                  . (a -> m b)
-                -> (batch (Scheduled command m) -> Batcher batch command m a -> m b)
+                -> (batch (Scheduled command) -> Batcher batch command m a -> m b)
                 -> m b
     }
 
@@ -50,7 +52,7 @@ instance Functor (Batcher batch command m) where
 -- | Composing two 'Batcher' computations using the applicative combinators
 -- ensures that commands scheduled in both computations are given to the
 -- 'Worker' in one batch.
-instance (Semigroup (batch (Scheduled command m))) => Applicative (Batcher batch command m) where
+instance (Semigroup (batch (Scheduled command))) => Applicative (Batcher batch command m) where
     pure x = Batcher $ \done _execute -> done x
 
     Batcher bf <*> Batcher bx = Batcher $ \done execute ->
@@ -71,7 +73,7 @@ instance (Semigroup (batch (Scheduled command m))) => Applicative (Batcher batch
            (\batchX bx' -> by (\       _y  -> execute batchX              bx'           )
                               (\batchY by' -> execute (batchX <> batchY) (bx' <*    by')))
 
-instance (Semigroup (batch (Scheduled command m))) => Monad (Batcher batch command m) where
+instance (Semigroup (batch (Scheduled command))) => Monad (Batcher batch command m) where
     return = pure
 
     Batcher b >>= f = Batcher $ \done execute ->
@@ -97,18 +99,21 @@ Batcher b `catchBatcher` h = Batcher $ \done execute -> do
           Execute batch b' -> execute batch (b' `catchBatcher` h)
 
 data Result batch command m a =
-    Done a | Execute (batch (Scheduled command m)) (Batcher batch command m a)
+    Done a | Execute (batch (Scheduled command)) (Batcher batch command m a)
 
 -- | Schedule a command for later execution.
 schedule
-    :: (Monad m, Applicative batch)
-    => (Either SomeException a -> m ()) -- ^ How to communicate the result
-    -> m a -- ^ How to retrieve the result
-    -> command a -- ^ The command to schedule.
+    :: (MonadIO m, MonadThrow m, Applicative batch)
+    => command a -- ^ The command to schedule.
     -> Batcher batch command m a
-schedule putRes takeRes cmd = Batcher $ \_done execute ->
-    execute (pure (Scheduled cmd putRes)) $ Batcher $ \done _execute ->
-      takeRes >>= done
+schedule cmd = Batcher $ \_done execute -> do
+    resultMVar <- liftIO newEmptyMVar
+    let putRes r = putMVar resultMVar r
+    execute (pure (Scheduled cmd putRes)) $ Batcher $ \done _execute -> do
+      r <- liftIO $ takeMVar resultMVar
+      case r of
+        Left ex -> throwM ex
+        Right x -> done x
 
 -- | A @Worker@ is responsible for executing the given batch of scheduled
 -- commands.
@@ -119,7 +124,7 @@ schedule putRes takeRes cmd = Batcher $ \_done execute ->
 --
 -- The @Worker@ should ensure that the result of /each/ command is written using
 -- 'writeResult'.
-type Worker batch command m = batch (Scheduled command m) -> m ()
+type Worker batch command m = batch (Scheduled command) -> m ()
 
 -- | A @'schedule'd@ command paired with a function to communicate its result.
 --
@@ -127,20 +132,20 @@ type Worker batch command m = batch (Scheduled command m) -> m ()
 -- <https://downloads.haskell.org/~ghc/latest/docs/html/users_guide/glasgow_exts.html?highlight=existentialquantification#ghc-flag--XExistentialQuantification existentially quantified>.
 -- This ensures that multiple commands with different
 -- result types can be batched in a list which can then be given to a 'Worker' for execution.
-data Scheduled command m = forall a.
+data Scheduled command = forall a.
      Scheduled
      { command   :: command a
-     , putResult :: Either SomeException a -> m ()
+     , putResult :: Either SomeException a -> IO ()
      }
 
 -- | A convenience @Worker@ that simply executes the scheduled
 -- commands in the order in which they are specified using the given
 -- function without any batching.
 simpleWorker
-    :: (MonadCatch m, Foldable batch)
+    :: (MonadCatch m, MonadIO m, Foldable batch)
     => (forall r. command r -> m r) -- ^ Specifies how to execute a command.
     -> Worker batch command m
-simpleWorker exe = traverse_ $ \(Scheduled cmd put) -> try (exe cmd) >>= put
+simpleWorker exe = traverse_ $ \(Scheduled cmd put) -> try (exe cmd) >>= liftIO . put
 
 -- | Infix flipped 'fmap'.
 (<&>) :: Functor f => f a -> (a -> b) -> f b
